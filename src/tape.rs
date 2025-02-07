@@ -15,7 +15,8 @@ use std::ops::Range;
 /// record takes place at the rate of 625 words per second. Because the tapes
 /// are removable, a library of standard programming and mathematical tables may
 /// be kept on tapes.
-struct Tape {
+#[derive(Clone)]
+pub struct Tape {
     id: char,
     position: usize,
     records: Box<[u8; 140_000]>
@@ -24,7 +25,7 @@ struct Tape {
 const WORD_SIZE: usize = 9;
 
 impl Tape {
-    fn new(id: char) -> Self {
+    pub fn new(id: char) -> Self {
         let records = Box::new([0u8; 140_000]);
 
         Self {
@@ -34,7 +35,7 @@ impl Tape {
         }
     }
 
-    const fn position(&self) -> usize {
+    pub const fn position(&self) -> usize {
         self.position
     }
 
@@ -42,22 +43,29 @@ impl Tape {
         self.position()..self.position() + 9
     }
 
-    fn write(&mut self, word: &[u8; WORD_SIZE]) {
+    pub fn current_word(&mut self) -> &mut [u8; WORD_SIZE] {
         let range = self.position_range();
-        self.records[range].copy_from_slice(word);
+        self.records.get_mut(range).unwrap().try_into().unwrap()
     }
 
-    fn read(&mut self) -> [u8; WORD_SIZE] {
-        let range = self.position_range();
-        self.records[range].try_into().unwrap()
+    pub fn write(&mut self, word: &[u8; WORD_SIZE]) {
+        self.current_word().copy_from_slice(word);
+        self.position += WORD_SIZE;
     }
 
-    fn erase(&mut self) {
-        let range = self.position_range();
-        self.records[range].fill(0);
+    pub fn read(&mut self) -> [u8; WORD_SIZE] {
+        let out = self.current_word().clone().try_into().unwrap();
+        self.position += WORD_SIZE;
+        out
     }
 
-    fn rewind() {
+    pub fn erase(&mut self) {
+        self.current_word().fill(0);
+    }
 
+    pub fn rewind(&mut self) -> Option<()> {
+        self.position = self.position.checked_sub(WORD_SIZE)?;
+
+        Some(())
     }
 }

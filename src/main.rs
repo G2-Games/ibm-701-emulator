@@ -1,13 +1,35 @@
+//! # Cool thing
+
 use modular_bitfield::{bitfield, prelude::*};
+use tape::Tape;
 
 mod tape;
 mod float;
 
 fn main() {
-    println!("Hello, world!");
+    let mut tape = Tape::new('J');
+
+    let inst = Instruction::new_nop();
+
+    for i in 0..100 {
+        tape.write(&inst.to_word());
+    }
+
+    while tape.rewind().is_some() {}
+
+    const STEP: usize = 10;
+    for i in (0..200).step_by(STEP) {
+        println!("{}", i);
+        for x in i..i + STEP {
+            let word = tape.read();
+            let inst = Instruction::from_bytes(word);
+            println!("{:?}", inst);
+        }
+    }
 }
 
 #[bitfield]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Instruction {
     /// Sign of instruction (automatically supplied by SpeedCo I)
     sign: B1,
@@ -37,6 +59,18 @@ struct Instruction {
     c: B10,
 }
 
+impl Instruction {
+    fn new_nop() -> Self {
+        Self::new()
+            .with_op_1(Operation1::NoOp)
+            .with_op_2(Operation2::NoOp)
+    }
+
+    fn to_word(&self) -> [u8; 9] {
+        self.into_bytes().try_into().unwrap()
+    }
+}
+
 // About Write Tape instructions:
 //
 // The block of information stored in electrostatic cells A to
@@ -52,6 +86,7 @@ struct Instruction {
 
 #[derive(BitfieldSpecifier)]
 #[bits = 12]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum Operation1 {
     /// Add
     ///
@@ -230,12 +265,14 @@ enum Operation1 {
     /// Eject
     Eject = 767,
 
-    // No operation
+    /// No operation
+    #[default]
     NoOp = 571,
 }
 
 #[derive(BitfieldSpecifier)]
 #[bits = 8]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum Operation2 {
     /// Transfer
     Tr = 104,
@@ -306,5 +343,6 @@ enum Operation2 {
 
     Stop = 123,
 
+    #[default]
     NoOp = 000,
 }

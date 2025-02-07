@@ -1,15 +1,40 @@
+use modular_bitfield::{bitfield, prelude::*};
+
+mod tape;
+mod float;
+
 fn main() {
     println!("Hello, world!");
 }
 
+#[bitfield]
 struct Instruction {
-    sign: bool,
-    r_code: u8,
-    op_1: u16,
-    op_2: u8,
-    d: u16,
-    a: u16,
-    b: u16,
+    /// Sign of instruction (automatically supplied by SpeedCo I)
+    sign: B1,
+    #[skip]
+    zero1: B1,
+    /// R-code
+    r_code: B3,
+    #[skip]
+    zero2: B1,
+    /// OP₁
+    op_1: Operation1,
+    /// OP₂
+    op_2: Operation2,
+    /// D
+    d: B10,
+    #[skip]
+    zero3: B1,
+    /// A
+    a: B10,
+    /// B
+    b: B10,
+    #[skip]
+    zero4: B2,
+    /// L
+    l: B3,
+    /// C
+    c: B10,
 }
 
 // About Write Tape instructions:
@@ -21,11 +46,13 @@ struct Instruction {
 
 // About Read Forward Tape instructions:
 //
-// The first B — A -j- 1 words of the next block of informa­
+// The first B — A + 1 words of the next block of informa­
 // tion stored on the designated tape are read and stored in
 // electrostatic cells A to B. (Notes 1, 3, and 4.)
 
-enum Operation {
+#[derive(BitfieldSpecifier)]
+#[bits = 12]
+enum Operation1 {
     /// Add
     ///
     /// Q(A) + Q(B) = Q(C)
@@ -73,7 +100,7 @@ enum Operation {
 
     /// Negative divide
     ///
-    /// \[Q(A)] ÷ \[Q(B)] = Q(C)
+    /// -\[Q(A)] ÷ \[Q(B)] = Q(C)
     NgDiv = 748,
 
     /// Square root
@@ -98,16 +125,16 @@ enum Operation {
 
     /// Logarithm
     ///
-    /// tan⁻¹\[Q(A)] = Q(C)
+    /// logₑ\[Q(A)] = Q(C)
     Ln = 784,
 
     /// Move
     ///
-    /// The block of information stored in electrostatic cells A to
-    /// B is stored in electrostatic cells C to C T B — A. See
-    /// Appendix E.
+    /// The block of information stored in electrostatic cells A to B is stored
+    /// in electrostatic cells C to C + B - A. See Appendix E.
     Move = 690,
 
+    // WRITE
     /// Write tape J
     WrtpJ = 532,
 
@@ -120,6 +147,7 @@ enum Operation {
     /// Write tape M
     WrtpM = 535,
 
+    // READ FORWARD
     /// Read forward tape J
     RftpJ = 435,
 
@@ -131,4 +159,152 @@ enum Operation {
 
     /// Read forward tape M
     RftpM = 441,
+
+    // SKIP FORWARD
+    /// Skip forward tape J
+    SftpJ = 556,
+
+    /// Skip forward tape K
+    SftpK = 557,
+
+    /// Skip forward tape L
+    SftpL = 558,
+
+    /// Skip forward tape M
+    SftpM = 559,
+
+    // SKIP BACKWARD
+    /// Skip forward tape J
+    SbtpJ = 546,
+
+    /// Skip forward tape K
+    SbtpK = 547,
+
+    /// Skip forward tape L
+    SbtpL = 548,
+
+    /// Skip forward tape M
+    SbtpM = 549,
+
+    // REWIND
+    /// Skip forward tape J
+    RwtpJ = 572,
+
+    /// Skip forward tape K
+    RwtpK = 574,
+
+    /// Skip forward tape L
+    RwtpL = 576,
+
+    /// Skip forward tape M
+    RwtpM = 578,
+
+    // END FILE
+    /// Skip forward tape J
+    EftpJ = 564,
+
+    /// Skip forward tape K
+    EftpK = 566,
+
+    /// Skip forward tape L
+    EftpL = 568,
+
+    /// Skip forward tape M
+    EftpM = 570,
+
+    /// Write drum P
+    WrdrP = 497,
+    /// Write drum Q
+    WrdrQ = 498,
+
+    /// Read forward drum P
+    RfdrP = 526,
+    /// Read forward drum Q
+    RfdrQ = 529,
+
+    /// Print
+    ///
+    /// The printer paper is ejected. (See Appendix C.)
+    Print = 580,
+
+    /// Eject
+    Eject = 767,
+
+    // No operation
+    NoOp = 571,
+}
+
+#[derive(BitfieldSpecifier)]
+#[bits = 8]
+enum Operation2 {
+    /// Transfer
+    Tr = 104,
+    /// Transfer plus
+    TrPl = 109,
+    /// Transfer minus
+    TrMn = 115,
+    /// Transfer zero
+    TrZ = 112,
+    /// Sense and transfer P
+    SnTrP = 117,
+    /// Sense and transfer Q
+    SnTrQ = 120,
+
+    // Transfer and Increase
+    /// Transfer and Increase Ra
+    TiA = 128,
+    /// Transfer and Increase Rb
+    TiB = 126,
+    TiC = 125,
+    TiAB = 130,
+    TiBC = 127,
+    TiAC = 129,
+    TiABC = 131,
+
+    TdA = 135,
+    TdB = 133,
+    TdC = 132,
+    TdAB = 137,
+    TdBC = 134,
+    TdAC = 136,
+    TdABC = 138,
+
+    SetRA = 139,
+    SetRB = 250,
+    SetRC = 145,
+
+    SkRA = 152,
+    SkRB = 159,
+    SkRC = 162,
+
+    RAddA = 199,
+    RAddB = 202,
+    RAddC = 205,
+    RAddD = 208,
+
+    AddA = 177,
+    AddB = 184,
+    AddC = 190,
+    AddD = 193,
+
+    SubA = 211,
+    SubB = 216,
+    SubC = 221,
+    SubD = 226,
+
+    StA = 251,
+    StB = 252,
+    StC = 235,
+    StD = 244,
+
+    Skip = 165,
+
+    PrCh = 232,
+    StCh = 253,
+
+    EChTr = 254,
+
+    Stop = 123,
+
+    NoOp = 000,
 }

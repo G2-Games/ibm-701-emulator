@@ -1,348 +1,212 @@
-//! # Cool thing
+use std::fmt::Display;
 
-use modular_bitfield::{bitfield, prelude::*};
-use tape::Tape;
-
-mod tape;
-mod float;
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 
 fn main() {
-    let mut tape = Tape::new('J');
+    let instructions = [
+        Instruction::new(true,  Opcode::R_ADD,  1492),
+        Instruction::new(true,  Opcode::ADD,    1588),
+        Instruction::new(false, Opcode::A_LEFT, 1),
+        Instruction::new(true,  Opcode::STORE,  1812)
+    ];
 
-    let inst = Instruction::new_nop();
+    let mut emulator = Emulator::new();
 
-    for i in 0..100 {
-        tape.write(&inst.to_word());
+    for inst in instructions {
+        println!("{inst}");
+        emulator.execute(inst);
     }
 
-    while tape.rewind().is_some() {}
+    dbg!(emulator);
+}
 
-    const STEP: usize = 10;
-    for i in (0..200).step_by(STEP) {
-        println!("{}", i);
-        for x in i..i + STEP {
-            let word = tape.read();
-            let inst = Instruction::from_bytes(word);
-            println!("{:?}", inst);
+#[allow(clippy::zero_prefixed_literal, clippy::upper_case_acronyms, non_camel_case_types)]
+#[derive(Debug, Clone, Copy, FromPrimitive)]
+enum Opcode {
+    STOP    = 00, // Stop and Transfer
+    TR      = 01, // Transfer
+    TR_OV   = 02, // Transfer on Overflow
+    TR_PLUS = 03, // Transfer on Plus
+    TR_ZERO = 04, // Transfer on Zero
+    SUB     = 05, // Subtract
+    R_SUB   = 06, // Reset and Subtract
+    SUB_AB  = 07, // Subtract Absolute Value
+    NO_OP   = 08, // No Operation
+    ADD     = 09, // Add
+    R_ADD   = 10, // Reset and Add
+    ADD_AB  = 11, // Add Absolute Value
+    STORE   = 12, // Store
+    STORE_A = 13, // Store Address
+    STORE_MQ = 14, // Store Contents of MQ Register
+    LOAD_MQ = 15, // Load MQ Register
+    MPY     = 16, // Multiply
+    MPY_R   = 17, // Multiply and Round
+    DIV     = 18, // Divide
+    ROUND   = 19, // Round
+    L_LEFT  = 20, // Long Left Shift
+    L_RIGHT = 21, // Long Right Shift
+    A_LEFT  = 22, // Accumulator Left Shift
+    A_RIGHT = 23, // Accumulator Right Shift
+    READ    = 24, // Prepare to Read
+    READ_B  = 25, // Prepare to Read Backward
+    WRITE   = 26, // Prepare to Write
+    WRITE_EF = 27, // Write End of File
+    REWIND  = 28, // Rewind Tape
+    SET_DR  = 29, // Set Drum Address
+    SENSE   = 30, // Sense and Skip or Control
+    COPY    = 31, // Copy and Skip
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Instruction {
+    opcode: Opcode,
+    address: u16,
+    sign: bool,
+}
+
+impl Instruction {
+    fn new(sign: bool, opcode: Opcode, address: u16) -> Self {
+        Self {
+            opcode,
+            address,
+            sign,
+        }
+    }
+
+    fn as_bytes(&self) -> u64 {
+        let mut output = 0;
+        output |= (self.sign as u64) << 36;
+        output |= (self.opcode as u64) << 30;
+        output |= (self.address as u64) << 18;
+
+        output
+    }
+
+    fn from_bytes(bytes: u64) -> Self {
+        let sign = bytes & 0b1000000000000000000000000000000000000 != 0;
+
+        let opcode = (bytes & 0b011111000000000000000000000000000000) >> 30;
+        let opcode = Opcode::from_u64(opcode).unwrap();
+
+        let address = ((bytes & 0b000000111111111111000000000000000000) >> 18) as u16;
+
+        Instruction {
+            opcode,
+            address,
+            sign,
         }
     }
 }
 
-#[bitfield]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Instruction {
-    /// Sign of instruction (automatically supplied by SpeedCo I)
-    sign: B1,
-    #[skip]
-    zero1: B1,
-    /// R-code
-    r_code: B3,
-    #[skip]
-    zero2: B1,
-    /// OP₁
-    op_1: Operation1,
-    /// OP₂
-    op_2: Operation2,
-    /// D
-    d: B10,
-    #[skip]
-    zero3: B1,
-    /// A
-    a: B10,
-    /// B
-    b: B10,
-    #[skip]
-    zero4: B2,
-    /// L
-    l: B3,
-    /// C
-    c: B10,
-}
+impl Display for Instruction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut sign = "+";
+        if self.sign {
+            sign = "-";
+        }
 
-impl Instruction {
-    fn new_nop() -> Self {
-        Self::new()
-            .with_op_1(Operation1::NoOp)
-            .with_op_2(Operation2::NoOp)
-    }
+        let opcode = format!("{:?}", self.opcode);
 
-    fn to_word(&self) -> [u8; 9] {
-        self.into_bytes().try_into().unwrap()
+        write!(f, " {} | {:<10} | {}", sign, opcode, self.address)
     }
 }
 
-// About Write Tape instructions:
-//
-// The block of information stored in electrostatic cells A to
-// B is written on the designated tape. The most recent
-// previous instruction affecting the same tape must be
-// either WRITE or REWIND.
-
-// About Read Forward Tape instructions:
-//
-// The first B — A + 1 words of the next block of informa­
-// tion stored on the designated tape are read and stored in
-// electrostatic cells A to B. (Notes 1, 3, and 4.)
-
-#[derive(BitfieldSpecifier)]
-#[bits = 12]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum Operation1 {
-    /// Add
-    ///
-    /// Q(A) + Q(B) = Q(C)
-    Add = 658,
-
-    /// Subtract
-    ///
-    /// Q(A) + Q(B) = Q(C)
-    Sub = 696,
-
-    /// Add absolute
-    ///
-    /// Q(A) + |Q(B)| = Q(C)
-    AddAb = 699,
-
-    /// Absolute add
-    ///
-    /// |Q(A)| + |Q(B)| = Q(C)
-    AbAdd = 703,
-
-    /// Subtract absolute
-    ///
-    /// Q(A) - |Q(B)| = Q(C)
-    SubAb = 707,
-
-    /// Absolute subtract
-    ///
-    /// |Q(A)| - |Q(B)| = Q(C)
-    AbSub = 711,
-
-    /// Multiply
-    ///
-    /// \[Q(A)] × \[Q(B)] = Q(C)
-    Mpy = 715,
-
-    /// Negative multiply
-    ///
-    /// -\[Q(A)] × \[Q(B)] = Q(C)
-    NgMpy = 731,
-
-    /// Divide
-    ///
-    /// \[Q(A)] ÷ \[Q(B)] = Q(C)
-    Div = 734,
-
-    /// Negative divide
-    ///
-    /// -\[Q(A)] ÷ \[Q(B)] = Q(C)
-    NgDiv = 748,
-
-    /// Square root
-    ///
-    /// √Q(A) = Q(C)
-    Sqrt = 782,
-
-    /// Sine
-    ///
-    /// sin\[Q(A)] = Q(C)
-    Sine = 780,
-
-    /// Arc tangent
-    ///
-    /// tan⁻¹\[Q(A)] = Q(C)
-    Artan = 781,
-
-    /// Exponential
-    ///
-    /// e^\[Q(A)] = Q(C)
-    Exp = 783,
-
-    /// Logarithm
-    ///
-    /// logₑ\[Q(A)] = Q(C)
-    Ln = 784,
-
-    /// Move
-    ///
-    /// The block of information stored in electrostatic cells A to B is stored
-    /// in electrostatic cells C to C + B - A. See Appendix E.
-    Move = 690,
-
-    // WRITE
-    /// Write tape J
-    WrtpJ = 532,
-
-    /// Write tape K
-    WrtpK = 533,
-
-    /// Write tape L
-    WrtpL = 534,
-
-    /// Write tape M
-    WrtpM = 535,
-
-    // READ FORWARD
-    /// Read forward tape J
-    RftpJ = 435,
-
-    /// Read forward tape K
-    RftpK = 437,
-
-    /// Read forward tape L
-    RftpL = 439,
-
-    /// Read forward tape M
-    RftpM = 441,
-
-    // SKIP FORWARD
-    /// Skip forward tape J
-    SftpJ = 556,
-
-    /// Skip forward tape K
-    SftpK = 557,
-
-    /// Skip forward tape L
-    SftpL = 558,
-
-    /// Skip forward tape M
-    SftpM = 559,
-
-    // SKIP BACKWARD
-    /// Skip forward tape J
-    SbtpJ = 546,
-
-    /// Skip forward tape K
-    SbtpK = 547,
-
-    /// Skip forward tape L
-    SbtpL = 548,
-
-    /// Skip forward tape M
-    SbtpM = 549,
-
-    // REWIND
-    /// Skip forward tape J
-    RwtpJ = 572,
-
-    /// Skip forward tape K
-    RwtpK = 574,
-
-    /// Skip forward tape L
-    RwtpL = 576,
-
-    /// Skip forward tape M
-    RwtpM = 578,
-
-    // END FILE
-    /// Skip forward tape J
-    EftpJ = 564,
-
-    /// Skip forward tape K
-    EftpK = 566,
-
-    /// Skip forward tape L
-    EftpL = 568,
-
-    /// Skip forward tape M
-    EftpM = 570,
-
-    /// Write drum P
-    WrdrP = 497,
-    /// Write drum Q
-    WrdrQ = 498,
-
-    /// Read forward drum P
-    RfdrP = 526,
-    /// Read forward drum Q
-    RfdrQ = 529,
-
-    /// Print
-    ///
-    /// The printer paper is ejected. (See Appendix C.)
-    Print = 580,
-
-    /// Eject
-    Eject = 767,
-
-    /// No operation
-    #[default]
-    NoOp = 571,
+#[derive(Debug, Default, Clone, Copy)]
+struct Accumulator {
+    pub q: bool,
+    pub p: bool,
+    pub value: i64,
 }
 
-#[derive(BitfieldSpecifier)]
-#[bits = 8]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum Operation2 {
-    /// Transfer
-    Tr = 104,
-    /// Transfer plus
-    TrPl = 109,
-    /// Transfer minus
-    TrMn = 115,
-    /// Transfer zero
-    TrZ = 112,
-    /// Sense and transfer P
-    SnTrP = 117,
-    /// Sense and transfer Q
-    SnTrQ = 120,
+impl Accumulator {
+    fn reset(&mut self) {
+        self.q = false;
+        self.p = false;
+        self.value = 0;
+    }
+}
 
-    // Transfer and Increase
-    /// Transfer and Increase Ra
-    TiA = 128,
-    /// Transfer and Increase Rb
-    TiB = 126,
-    TiC = 125,
-    TiAB = 130,
-    TiBC = 127,
-    TiAC = 129,
-    TiABC = 131,
+#[derive(Debug, Clone, Copy)]
+struct Emulator {
+    instruction_counter: u16,
 
-    TdA = 135,
-    TdB = 133,
-    TdC = 132,
-    TdAB = 137,
-    TdBC = 134,
-    TdAC = 136,
-    TdABC = 138,
+    //memory_register: i64,
+    accumulator_register: Accumulator,
+    multiplier_quotient_register: i64,
 
-    SetRA = 139,
-    SetRB = 250,
-    SetRC = 145,
+    memory: [i64; 4096],
+}
 
-    SkRA = 152,
-    SkRB = 159,
-    SkRC = 162,
+impl Emulator {
+    fn new() -> Self {
+        Self {
+            instruction_counter: 0,
+            accumulator_register: Accumulator::default(),
+            multiplier_quotient_register: 0,
+            memory: [0i64; 4096],
+        }
+    }
 
-    RAddA = 199,
-    RAddB = 202,
-    RAddC = 205,
-    RAddD = 208,
+    fn execute(&mut self, inst: Instruction) {
+        match inst.opcode {
+            Opcode::STOP => {
+                self.instruction_counter = inst.address;
+            },
+            Opcode::TR => todo!(),
+            Opcode::TR_OV => todo!(),
+            Opcode::TR_PLUS => todo!(),
+            Opcode::TR_ZERO => todo!(),
+            Opcode::SUB => todo!(),
+            Opcode::R_SUB => todo!(),
+            Opcode::SUB_AB => todo!(),
+            Opcode::NO_OP => todo!(),
+            Opcode::ADD => {
+                let mut addr = inst.address as i64;
+                if inst.sign {
+                    addr = -addr;
+                }
 
-    AddA = 177,
-    AddB = 184,
-    AddC = 190,
-    AddD = 193,
+                self.accumulator_register.value += addr
+            },
+            Opcode::R_ADD => {
+                let mut addr = inst.address as i64;
+                if inst.sign {
+                    addr = -addr;
+                }
 
-    SubA = 211,
-    SubB = 216,
-    SubC = 221,
-    SubD = 226,
-
-    StA = 251,
-    StB = 252,
-    StC = 235,
-    StD = 244,
-
-    Skip = 165,
-
-    PrCh = 232,
-    StCh = 253,
-
-    EChTr = 254,
-
-    Stop = 123,
-
-    #[default]
-    NoOp = 000,
+                self.accumulator_register.value = addr
+            },
+            Opcode::ADD_AB => todo!(),
+            Opcode::STORE => {
+                let loc = inst.address as usize;
+                if inst.sign {
+                    self.memory[loc / 2] = self.accumulator_register.value;
+                } else {
+                    todo!("Half-Word store is not yet implemented");
+                }
+            },
+            Opcode::STORE_A => todo!(),
+            Opcode::STORE_MQ => todo!(),
+            Opcode::LOAD_MQ => todo!(),
+            Opcode::MPY => todo!(),
+            Opcode::MPY_R => todo!(),
+            Opcode::DIV => todo!(),
+            Opcode::ROUND => todo!(),
+            Opcode::L_LEFT => todo!(),
+            Opcode::L_RIGHT => todo!(),
+            Opcode::A_LEFT => {
+                self.accumulator_register.value <<= inst.address as usize;
+            },
+            Opcode::A_RIGHT => todo!(),
+            Opcode::READ => todo!(),
+            Opcode::READ_B => todo!(),
+            Opcode::WRITE => todo!(),
+            Opcode::WRITE_EF => todo!(),
+            Opcode::REWIND => todo!(),
+            Opcode::SET_DR => todo!(),
+            Opcode::SENSE => todo!(),
+            Opcode::COPY => todo!(),
+        }
+    }
 }

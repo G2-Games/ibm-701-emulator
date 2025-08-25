@@ -5,20 +5,33 @@ use num_traits::FromPrimitive as _;
 
 fn main() {
     let instructions = [
-        Instruction::new(true,  Opcode::R_ADD,  1492),
-        Instruction::new(true,  Opcode::ADD,    1588),
+        Instruction::new(false,  Opcode::R_ADD,  1492),
+        Instruction::new(false,  Opcode::ADD,    1588),
         Instruction::new(false, Opcode::A_LEFT, 1),
         Instruction::new(true,  Opcode::STORE,  1812)
     ];
+    let instructions = pack_instructions(&instructions);
 
     let mut emulator = Emulator::new();
 
-    for inst in instructions {
-        println!("{inst}");
-        emulator.execute(inst);
+    emulator.memory[..instructions.len()].copy_from_slice(&instructions);
+
+    emulator.run();
+    emulator.print_debug();
+    emulator.print_memory();
+}
+
+fn pack_instructions(inst_list: &[Instruction]) -> Vec<i64> {
+    let mut inst_bits = Vec::new();
+
+    for inst_pair in inst_list.chunks(2) {
+        let mut new_value = 0;
+        new_value |= inst_pair[0].as_bits_high();
+        new_value |= inst_pair[1].as_bits_low();
+        inst_bits.push(new_value as i64);
     }
 
-    dbg!(emulator);
+    inst_bits
 }
 
 #[allow(clippy::zero_prefixed_literal, clippy::upper_case_acronyms, non_camel_case_types)]
@@ -74,22 +87,46 @@ impl Instruction {
         }
     }
 
-    fn as_bytes(&self) -> u64 {
+    fn as_bits_high(&self) -> u64 {
         let mut output = 0;
-        output |= (self.sign as u64) << 36;
+        output |= (self.sign as u64) << 35;
         output |= (self.opcode as u64) << 30;
         output |= (self.address as u64) << 18;
 
         output
     }
 
-    fn from_bytes(bytes: u64) -> Self {
-        let sign = bytes & 0b1000000000000000000000000000000000000 != 0;
+    fn as_bits_low(&self) -> u64 {
+        let mut output = 0;
+        output |= (self.sign as u64) << 17;
+        output |= (self.opcode as u64) << 12;
+        output |= self.address as u64;
+
+        output
+    }
+
+    fn from_bits_high(bytes: u64) -> Self {
+        let sign = bytes & 0b100000000000000000000000000000000000 != 0;
 
         let opcode = (bytes & 0b011111000000000000000000000000000000) >> 30;
         let opcode = Opcode::from_u64(opcode).unwrap();
 
         let address = ((bytes & 0b000000111111111111000000000000000000) >> 18) as u16;
+
+        Instruction {
+            opcode,
+            address,
+            sign,
+        }
+    }
+
+    fn from_bits_low(bytes: u64) -> Self {
+        let sign = bytes & 0b100000000000000000 != 0;
+
+        let opcode = (bytes & 0b011111000000000000) >> 12;
+        let opcode = Opcode::from_u64(opcode).unwrap();
+
+        let address = (bytes & 0b000000111111111111) as u16;
 
         Instruction {
             opcode,
@@ -108,7 +145,7 @@ impl Display for Instruction {
 
         let opcode = format!("{:?}", self.opcode);
 
-        write!(f, " {} | {:<10} | {}", sign, opcode, self.address)
+        write!(f, "{} | {:<10} | {}", sign, opcode, self.address)
     }
 }
 
@@ -135,7 +172,9 @@ struct Emulator {
     accumulator_register: Accumulator,
     multiplier_quotient_register: i64,
 
-    memory: [i64; 4096],
+    memory: [i64; 2048],
+
+    halt: bool,
 }
 
 impl Emulator {
@@ -144,14 +183,72 @@ impl Emulator {
             instruction_counter: 0,
             accumulator_register: Accumulator::default(),
             multiplier_quotient_register: 0,
-            memory: [0i64; 4096],
+            memory: [0i64; 2048],
+            halt: false,
         }
+    }
+
+    fn run(&mut self) {
+        while !self.halt && self.instruction_counter < 4096 {
+            let counter_value = self.instruction_counter as usize;
+
+            // Move on to the next instruction (unless this is modified...)
+            self.instruction_counter += 1;
+
+            let inst_value = self.memory[counter_value / 2];
+
+            let instruction = if counter_value.is_multiple_of(2) {
+                Instruction::from_bits_high(inst_value as u64)
+            } else {
+                Instruction::from_bits_low(inst_value as u64)
+            };
+
+            println!(" {} | {}", self.instruction_counter, instruction);
+
+            self.execute(instruction);
+        }
+    }
+
+    fn print_debug(&self) {
+        println!(">----<");
+        println!(" IC: {}", self.instruction_counter);
+        println!("Acc: {:?}", self.accumulator_register);
+        println!(" MQ: {:?}", self.multiplier_quotient_register);
+        println!(">----<");
+    }
+
+    fn print_memory(&self) {
+        for (rn, row) in self.memory.chunks(16).enumerate() {
+            for (cn, value) in row.iter().enumerate() {
+                let mut sign = "+";
+                if *value < 0 {
+                    sign = "-";
+                }
+
+                let mut color1 = "";
+                let mut color2 = "";
+                if *value != 0 {
+                    color1 = "\x1b[93m";
+                    color2 = "\x1b[0m";
+                }
+                if rn + cn == self.instruction_counter as usize {
+                    color1 = "\x1b[92m";
+                    color2 = "\x1b[0m";
+                }
+
+                print!("{color1}{sign}{:09X}{color2} ", value.abs())
+            }
+            println!()
+        }
+
+        println!("Green:  Instruction Counter location\nOrange: Nonzero values");
     }
 
     fn execute(&mut self, inst: Instruction) {
         match inst.opcode {
             Opcode::STOP => {
                 self.instruction_counter = inst.address;
+                self.halt = true;
             },
             Opcode::TR => todo!(),
             Opcode::TR_OV => todo!(),
@@ -177,7 +274,9 @@ impl Emulator {
 
                 self.accumulator_register.value = addr
             },
-            Opcode::ADD_AB => todo!(),
+            Opcode::ADD_AB => {
+                self.accumulator_register.value = inst.address as i64
+            },
             Opcode::STORE => {
                 let loc = inst.address as usize;
                 if inst.sign {

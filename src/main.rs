@@ -5,10 +5,11 @@ use num_traits::FromPrimitive as _;
 
 fn main() {
     let instructions = [
-        Instruction::new(false,  Opcode::R_ADD,  1492),
-        Instruction::new(false,  Opcode::ADD,    1588),
+        Instruction::new(false, Opcode::R_ADD,  1492),
+        Instruction::new(false, Opcode::ADD,    1588),
         Instruction::new(false, Opcode::A_LEFT, 1),
-        Instruction::new(true,  Opcode::STORE,  1812)
+        Instruction::new(true,  Opcode::STORE,  1812),
+        Instruction::new(true,  Opcode::TR,     0),
     ];
     let instructions = pack_instructions(&instructions);
 
@@ -16,9 +17,13 @@ fn main() {
 
     emulator.memory[..instructions.len()].copy_from_slice(&instructions);
 
-    emulator.run();
+    loop {
+        emulator.step();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+
     emulator.print_debug();
-    emulator.print_memory();
+    emulator.print_full_memory();
 }
 
 fn pack_instructions(inst_list: &[Instruction]) -> Vec<i64> {
@@ -27,7 +32,9 @@ fn pack_instructions(inst_list: &[Instruction]) -> Vec<i64> {
     for inst_pair in inst_list.chunks(2) {
         let mut new_value = 0;
         new_value |= inst_pair[0].as_bits_high();
-        new_value |= inst_pair[1].as_bits_low();
+        if inst_pair.len() == 2 {
+            new_value |= inst_pair[1].as_bits_low();
+        }
         inst_bits.push(new_value as i64);
     }
 
@@ -188,25 +195,42 @@ impl Emulator {
         }
     }
 
-    fn run(&mut self) {
-        while !self.halt && self.instruction_counter < 4096 {
-            let counter_value = self.instruction_counter as usize;
+    fn increment_instruction(&mut self) {
+        self.instruction_counter += 1;
 
-            // Move on to the next instruction (unless this is modified...)
-            self.instruction_counter += 1;
-
-            let inst_value = self.memory[counter_value / 2];
-
-            let instruction = if counter_value.is_multiple_of(2) {
-                Instruction::from_bits_high(inst_value as u64)
-            } else {
-                Instruction::from_bits_low(inst_value as u64)
-            };
-
-            println!(" {} | {}", self.instruction_counter, instruction);
-
-            self.execute(instruction);
+        if self.instruction_counter >= 2u16.pow(12) {
+            self.instruction_counter = 0;
         }
+    }
+
+    fn run(&mut self) {
+        // Un-halt the machine, because we just told it to run
+        self.halt = false;
+
+        while !self.halt && self.instruction_counter < 4096 {
+            self.step();
+        }
+    }
+
+    fn step(&mut self) -> bool {
+        let counter_value = self.instruction_counter as usize;
+
+        // Move on to the next instruction (unless this is modified...)
+        self.increment_instruction();
+
+        let inst_value = self.memory[counter_value / 2];
+
+        let instruction = if counter_value.is_multiple_of(2) {
+            Instruction::from_bits_high(inst_value as u64)
+        } else {
+            Instruction::from_bits_low(inst_value as u64)
+        };
+
+        println!(" {:<6} | {}", self.instruction_counter, instruction);
+
+        self.execute(instruction);
+
+        false
     }
 
     fn print_debug(&self) {
@@ -217,7 +241,7 @@ impl Emulator {
         println!(">----<");
     }
 
-    fn print_memory(&self) {
+    fn print_full_memory(&self) {
         for (rn, row) in self.memory.chunks(16).enumerate() {
             for (cn, value) in row.iter().enumerate() {
                 let mut sign = "+";
@@ -244,13 +268,26 @@ impl Emulator {
         println!("Green:  Instruction Counter location\nOrange: Nonzero values");
     }
 
+    fn print_address(&self, sign: bool, addr: usize) {
+        let value = self.memory[addr / 2];
+
+        let mut sign = "+";
+        if value < 0 {
+            sign = "-";
+        }
+
+        println!("\x1b[1m {:<6} | {} |            | {}\x1b[0m <-- DEBUG", addr, sign, value.abs());
+    }
+
     fn execute(&mut self, inst: Instruction) {
         match inst.opcode {
             Opcode::STOP => {
                 self.instruction_counter = inst.address;
                 self.halt = true;
             },
-            Opcode::TR => todo!(),
+            Opcode::TR => {
+                self.instruction_counter = inst.address;
+            },
             Opcode::TR_OV => todo!(),
             Opcode::TR_PLUS => todo!(),
             Opcode::TR_ZERO => todo!(),
@@ -297,7 +334,9 @@ impl Emulator {
             Opcode::A_LEFT => {
                 self.accumulator_register.value <<= inst.address as usize;
             },
-            Opcode::A_RIGHT => todo!(),
+            Opcode::A_RIGHT => {
+                self.accumulator_register.value >>= inst.address as usize;
+            },
             Opcode::READ => todo!(),
             Opcode::READ_B => todo!(),
             Opcode::WRITE => todo!(),
@@ -308,4 +347,10 @@ impl Emulator {
             Opcode::COPY => todo!(),
         }
     }
+}
+
+
+enum Half {
+    Upper,
+    Lower,
 }

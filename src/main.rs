@@ -1,41 +1,61 @@
+mod accumulator;
+
+/// 36 bits out of a 64 bit type
+pub const FULL_WORD_MASK: u64 = 0xFFFFFFFFF;
+/// The upper 18 bits of a 36 bit section of a 64 bit type
+pub const LO_WORD_MASK: u64 = 0x3FFFF;
+/// The lower 18 bits of a 36 bit section of a 64 bit type
+pub const HI_WORD_MASK: u64 = 0xFFFFC0000;
+
+pub const LO_WORD_SIGN_MASK: u64 = 0x20000;
+pub const LO_WORD_VALUE_MASK: u64 = LO_WORD_MASK >> 1;
+pub const FULL_WORD_VALUE_MASK: u64 = FULL_WORD_MASK >> 1;
+
 use std::fmt::Display;
 
+use accumulator::{get_full_word, get_half_word, to_full_word, to_half_word, Accumulator};
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 
 fn main() {
     let instructions = [
-        Instruction::new(false, Opcode::R_ADD,  1492),
-        Instruction::new(false, Opcode::ADD,    1588),
-        Instruction::new(false, Opcode::A_LEFT, 1),
-        Instruction::new(true,  Opcode::STORE,  1812),
-        Instruction::new(true,  Opcode::TR,     0),
+        Instruction::new(true,  Opcode::R_ADD,  4),
+        Instruction::new(true,  Opcode::ADD,    6),
+        //Instruction::new(false, Opcode::A_LEFT, 1),
+        Instruction::new(true,  Opcode::STORE,  10),
+        Instruction::new(false, Opcode::STOP,   0)
+        //Instruction::new(true,  Opcode::TR,     0),
     ];
     let instructions = pack_instructions(&instructions);
 
     let mut emulator = Emulator::new();
 
     emulator.memory[..instructions.len()].copy_from_slice(&instructions);
+    emulator.memory[4 / 2] = 0x7FFFFFFFC;
+    emulator.memory[6 / 2] = 7;
 
-    loop {
-        emulator.step();
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
+    // loop {
+    //     emulator.step();
+    //     std::thread::sleep(std::time::Duration::from_millis(500));
+    // }
+    emulator.run();
 
     emulator.print_debug();
     emulator.print_full_memory();
 }
 
-fn pack_instructions(inst_list: &[Instruction]) -> Vec<i64> {
+fn pack_instructions(inst_list: &[Instruction]) -> Vec<u64> {
     let mut inst_bits = Vec::new();
 
     for inst_pair in inst_list.chunks(2) {
         let mut new_value = 0;
-        new_value |= inst_pair[0].as_bits_high();
+        new_value |= inst_pair[0].as_bits_low();
         if inst_pair.len() == 2 {
-            new_value |= inst_pair[1].as_bits_low();
+            new_value |= inst_pair[1].as_bits_high();
+        } else {
+            new_value |= HI_WORD_MASK;
         }
-        inst_bits.push(new_value as i64);
+        inst_bits.push(new_value);
     }
 
     inst_bits
@@ -94,13 +114,16 @@ impl Instruction {
         }
     }
 
-    fn as_bits_high(&self) -> u64 {
-        let mut output = 0;
-        output |= (self.sign as u64) << 35;
-        output |= (self.opcode as u64) << 30;
-        output |= (self.address as u64) << 18;
+    fn address_signed(&self) -> i16 {
+        if !self.sign {
+            self.address as i16
+        } else {
+            -(self.address as i16)
+        }
+    }
 
-        output
+    fn as_bits_high(&self) -> u64 {
+        self.as_bits_low() << 18
     }
 
     fn as_bits_low(&self) -> u64 {
@@ -113,18 +136,7 @@ impl Instruction {
     }
 
     fn from_bits_high(bytes: u64) -> Self {
-        let sign = bytes & 0b100000000000000000000000000000000000 != 0;
-
-        let opcode = (bytes & 0b011111000000000000000000000000000000) >> 30;
-        let opcode = Opcode::from_u64(opcode).unwrap();
-
-        let address = ((bytes & 0b000000111111111111000000000000000000) >> 18) as u16;
-
-        Instruction {
-            opcode,
-            address,
-            sign,
-        }
+        Self::from_bits_low(bytes >> 18)
     }
 
     fn from_bits_low(bytes: u64) -> Self {
@@ -156,30 +168,15 @@ impl Display for Instruction {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-struct Accumulator {
-    pub q: bool,
-    pub p: bool,
-    pub value: i64,
-}
-
-impl Accumulator {
-    fn reset(&mut self) {
-        self.q = false;
-        self.p = false;
-        self.value = 0;
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 struct Emulator {
     instruction_counter: u16,
 
-    //memory_register: i64,
+    memory_register: i64,
     accumulator_register: Accumulator,
     multiplier_quotient_register: i64,
 
-    memory: [i64; 2048],
+    memory: [u64; 2048],
 
     halt: bool,
 }
@@ -190,7 +187,9 @@ impl Emulator {
             instruction_counter: 0,
             accumulator_register: Accumulator::default(),
             multiplier_quotient_register: 0,
-            memory: [0i64; 2048],
+            memory_register: 0,
+
+            memory: [FULL_WORD_MASK; 2048],
             halt: false,
         }
     }
@@ -221,9 +220,9 @@ impl Emulator {
         let inst_value = self.memory[counter_value / 2];
 
         let instruction = if counter_value.is_multiple_of(2) {
-            Instruction::from_bits_high(inst_value as u64)
+            Instruction::from_bits_low(inst_value)
         } else {
-            Instruction::from_bits_low(inst_value as u64)
+            Instruction::from_bits_high(inst_value)
         };
 
         println!(" {:<6} | {}", self.instruction_counter, instruction);
@@ -233,25 +232,49 @@ impl Emulator {
         false
     }
 
+    fn read_memory(&self, location: i16) -> i64 {
+        if location < 0 {
+            get_full_word(self.memory[location.unsigned_abs() as usize / 2])
+        } else {
+            get_half_word(self.memory[location.unsigned_abs() as usize / 2], location.abs() % 2 == 0)
+        }
+    }
+
+    fn write_memory(&mut self, location: i16, value: i64) {
+        if location < 0 {
+            self.memory[location.unsigned_abs() as usize / 2] = to_full_word(value);
+        } else {
+            self.memory[location.unsigned_abs() as usize / 2] = to_half_word(value, location.abs() % 2 == 0);
+        }
+    }
+
     fn print_debug(&self) {
         println!(">----<");
         println!(" IC: {}", self.instruction_counter);
-        println!("Acc: {:?}", self.accumulator_register);
+        println!("MEM: {:b}", to_full_word(self.memory_register));
+        println!(
+            "ACC: {{ value: {:b}, overflow: {}, sign: {} }}",
+            self.accumulator_register.value,
+            self.accumulator_register.overflow,
+            self.accumulator_register.sign,
+        );
         println!(" MQ: {:?}", self.multiplier_quotient_register);
         println!(">----<");
+    }
+
+    fn print_instructions(&self) {
+        for value in self.memory.iter().flat_map(|v| [v & LO_WORD_MASK, v & HI_WORD_MASK]) {
+            println!("{}", Instruction::from_bits_low(value));
+        }
     }
 
     fn print_full_memory(&self) {
         for (rn, row) in self.memory.chunks(16).enumerate() {
             for (cn, value) in row.iter().enumerate() {
-                let mut sign = "+";
-                if *value < 0 {
-                    sign = "-";
-                }
 
                 let mut color1 = "";
                 let mut color2 = "";
-                if *value != 0 {
+                if *value != 0xFFFFFFFFF {
                     color1 = "\x1b[93m";
                     color2 = "\x1b[0m";
                 }
@@ -260,7 +283,7 @@ impl Emulator {
                     color2 = "\x1b[0m";
                 }
 
-                print!("{color1}{sign}{:09X}{color2} ", value.abs())
+                print!("{color1}{:09X}{color2} ", value)
             }
             println!()
         }
@@ -276,7 +299,7 @@ impl Emulator {
             sign = "-";
         }
 
-        println!("\x1b[1m {:<6} | {} |            | {}\x1b[0m <-- DEBUG", addr, sign, value.abs());
+        println!("\x1b[1m {:<6} | {} |            | {}\x1b[0m <-- DEBUG", addr, sign, value);
     }
 
     fn execute(&mut self, inst: Instruction) {
@@ -296,31 +319,19 @@ impl Emulator {
             Opcode::SUB_AB => todo!(),
             Opcode::NO_OP => todo!(),
             Opcode::ADD => {
-                let mut addr = inst.address as i64;
-                if inst.sign {
-                    addr = -addr;
-                }
+                self.memory_register = self.read_memory(inst.address_signed());
 
-                self.accumulator_register.value += addr
+                self.accumulator_register.add(self.memory_register);
             },
             Opcode::R_ADD => {
-                let mut addr = inst.address as i64;
-                if inst.sign {
-                    addr = -addr;
-                }
+                self.memory_register = self.read_memory(inst.address_signed());
 
-                self.accumulator_register.value = addr
+                self.accumulator_register.reset();
+                self.accumulator_register.insert(self.memory_register);
             },
-            Opcode::ADD_AB => {
-                self.accumulator_register.value = inst.address as i64
-            },
+            Opcode::ADD_AB => todo!(),
             Opcode::STORE => {
-                let loc = inst.address as usize;
-                if inst.sign {
-                    self.memory[loc / 2] = self.accumulator_register.value;
-                } else {
-                    todo!("Half-Word store is not yet implemented");
-                }
+                self.write_memory(inst.address_signed(), self.accumulator_register.value_as_i64());
             },
             Opcode::STORE_A => todo!(),
             Opcode::STORE_MQ => todo!(),
